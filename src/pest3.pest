@@ -1,0 +1,55 @@
+
+NEWLINE = { "\n" | "\r" }
+space = _{ " " | "\t" }
+WHITESPACE = _{ space | NEWLINE }
+
+line_comment = _{ ("//" ~ !("/" | "!") ~ (!NEWLINE ~ ANY)*) }
+block_comment = _{ "/*" ~ (block_comment | !"*/" ~ ANY)* ~ "*/" }
+COMMENT = _{ block_comment | line_comment }
+
+doc_comment = ${ "//!" ~ space* ~ inner_doc ~ NEWLINE }
+line_doc = { "///" ~ inner_doc }
+inner_doc = @{ (!NEWLINE ~ ANY)* }
+
+grammar = { SOI ~ doc_comment* ~ rule* ~ EOI }
+
+rule = { line_doc* ~ ident ~ "=" ~ modifier? ~ "{" ~ expr ~ "}" }
+
+modifier = { atomic | silent | compound | non_atomic }
+	atomic = { "@" }
+	silent = { "_" }
+	compound = { "$" }
+	non_atomic = { "!" }
+
+expr = { prefix? ~ atom ~ postfix? ~ (infix ~ prefix? ~ atom ~ postfix?)* }
+	infix = _{ sequence | order }
+		sequence = { "~" }
+		order = { "|" }
+	prefix = _{ positive_predicate | negative_predicate }
+		positive_predicate = { "&" }
+		negative_predicate = { "!" }
+	postfix = _{ zero_or_more | one_or_more | optional | numbered }
+		zero_or_more = { "*" }
+		one_or_more = { "+" }
+		optional = { "?" }
+		numbered = { "{" ~ (between_n_and_m | at_most_n | at_least_n | exactly_n ) ~ "}" }
+			between_n_and_m = { number ~ "," ~ number }
+			at_most_n = { "," ~ number }
+			at_least_n = { number ~ "," }
+			exactly_n = { number }
+
+atom = _{ char_range | insensitive_string | string | ident | "(" ~ expr ~ ")" }
+
+insensitive_string = ${ "^" ~ string }
+
+string = ${ "\"" ~ inner_string ~ "\"" }
+	inner_string = @{ (&"\\" ~ escape | !"\"" ~ ANY)* }
+	escape = @{ "\\" ~ ("\"" | "\\" | "r" | "n" | "t" | "0" | "'" | code | unicode) }
+	code = @{ "x" ~ HEX_DIGIT{2} }
+	unicode = @{ "u" ~ "{" ~ HEX_DIGIT{2, 6} ~ "}" }
+
+char_range = { char ~ ".." ~ char }
+char = @{ "'" ~ (!"'" ~ ANY) ~ "'" }
+
+ident = @{ (ASCII_ALPHA | "_")+ }
+number = @{ ASCII_DIGIT+ }
