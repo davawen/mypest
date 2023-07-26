@@ -1,4 +1,4 @@
-use std::{hash::Hash, fmt::Debug, str::Chars, fs, env, io};
+use std::{hash::Hash, fmt::Debug, str::Chars, fs, env, io, path::Path, error::Error};
 
 use pest::{iterators::{Pair, Pairs}, Parser, Span};
 use pest_derive::Parser;
@@ -71,6 +71,7 @@ mod ast {
 
     #[derive(Debug)]
     pub enum Expr {
+        Parenthesized(Box<Expr>),
         CharRange(char, char),
         String(String),
         CaseInsensitive(String),
@@ -152,6 +153,7 @@ mod ast {
                 Rule::insensitive_string => Expr::CaseInsensitive(parse_string(r.into_inner().expect())),
                 Rule::string => Expr::String(parse_string(r)),
                 Rule::ident => Expr::Rule(Ident(r.as_str().to_owned())),
+                Rule::parenthesized => Expr::Parenthesized(Box::new(parse_expr(r.into_inner().expect()))),
                 Rule::expr => parse_expr(r),
                 _ => unreachable!()
             })
@@ -210,7 +212,7 @@ mod process {
             writeln!(out)?;
 
             for rule in &self.rules {
-                write!(out, "{rule}")?;
+                writeln!(out, "{rule}")?;
             }
 
             Ok(())
@@ -223,8 +225,7 @@ mod process {
                 writeln!(out, "/// {doc}")?;
             }
             let modifier = if let Some(modifier) = self.modifier { format!("{modifier}") } else { String::new() };
-            writeln!(out, "{} = {}{{ {} }}", self.name, modifier, self.expr)?;
-            writeln!(out)?;
+            write!(out, "{} = {}{{ {} }}", self.name, modifier, self.expr)?;
 
             Ok(())
         }
@@ -255,47 +256,70 @@ mod process {
     impl Display for ast::Expr {
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
             match_format!( self, f, {
+                Self::Parenthesized(e) => "({e})",
                 Self::CharRange(a, b) => "'{a}'..'{b}'",
                 Self::String(s) => "\"{s}\"",
                 Self::CaseInsensitive(s) => "^\"{s}\"",
                 Self::Rule(Ident(i)) => "{i}",
-                Self::Order(a, b) => "({a}) | ({b})",
-                Self::Sequence(a, b) => "({a}) ~ ({b})",
-                Self::PositivePredicate(p) => "&({p})",
-                Self::NegativePredicate(p) => "!({p})",
-                Self::ZeroOrMore(e) => "({e})*",
-                Self::OneOrMore(e) => "({e})+",
-                Self::Optional(e) => "({e})?",
-                Self::MinMax(min, max, e) => "({e}){{{min}, {max}}}",
-                Self::Max(max, e) => "({e}){{, {max}}}",
-                Self::Min(min, e) => "({e}){{{min},}}",
-                Self::Exact(n, e) => "({e}){{{n}}}"
+                Self::Order(a, b) => "{a} | {b}",
+                Self::Sequence(a, b) => "{a} ~ {b}",
+                Self::PositivePredicate(p) => "&{p}",
+                Self::NegativePredicate(p) => "!{p}",
+                Self::ZeroOrMore(e) => "{e}*",
+                Self::OneOrMore(e) => "{e}+",
+                Self::Optional(e) => "{e}?",
+                Self::MinMax(min, max, e) => "{e}{{{min}, {max}}}",
+                Self::Max(max, e) => "{e}{{, {max}}}",
+                Self::Min(min, e) => "{e}{{{min},}}",
+                Self::Exact(n, e) => "{e}{{{n}}}"
             })
         }
     }
 }
 
-fn main() {
-    let args: Vec<_> = env::args().collect();
-    let src = fs::read_to_string(&args[1]).unwrap();
-    let dest = &args[2];
+/// Preprocess pest3 grammars into pest
+#[derive(clap::Parser)]
+struct Args {
+    /// Wether to print the structure of the parsed grammar
+    #[arg(short, long)]
+    show_grammar: bool,
 
-    let mut tree = match Pest3::parse(Rule::grammar, &src) {
-        Ok(t) => t,
-        Err(e) => panic!("{e}")
-    };
+    /// Wether to print the resulting ast structure
+    #[arg(short, long)]
+    print_ast: bool,
 
-    for r in tree.clone() {
-        print_record(r, 0);
+    /// Input pest3 grammar
+    input_file: String,
+
+    /// Output grammar, or if not present output to STDOUT
+    output_file: Option<String>
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    use clap::Parser;
+    let args = Args::parse();
+
+    let src = fs::read_to_string(args.input_file)?;
+
+    let mut tree = Pest3::parse(Rule::grammar, &src)?;
+
+    if args.show_grammar {
+        for r in tree.clone() {
+            print_record(r, 0);
+        }
     }
 
     let grammar = ast::parse(tree.expect());
-    println!("{grammar:#?}");
+    if args.print_ast {
+        println!("{grammar:#?}");
+    }
 
     let generated = format!("{grammar}");
-    if dest == "-" {
-        println!("{generated}");
+    if let Some(out) = args.output_file {
+        fs::write(out, generated)?;
     } else {
-        fs::write(dest, generated).unwrap();
+        println!("{generated}");
     }
+
+    Ok(())
 }

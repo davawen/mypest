@@ -38,7 +38,9 @@ expr = { prefix? ~ atom ~ postfix? ~ (infix ~ prefix? ~ atom ~ postfix?)* }
 			at_least_n = { number ~ "," }
 			exactly_n = { number }
 
-atom = _{ char_range | insensitive_string | string | ident | "(" ~ expr ~ ")" }
+atom = _{ char_range | insensitive_string | string | ident | parenthesized }
+
+parenthesized = { "(" ~ expr ~ ")" }
 
 insensitive_string = ${ "^" ~ string }
 
