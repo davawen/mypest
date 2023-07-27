@@ -1,6 +1,6 @@
 rule = { "a" - "b" ~ "c"}
 
-foo = { "a"-+ ~ "b"+ }
+foo = _{ "a"-+ ~ "b"~+ }
 
 //=>
 //foo = ${ "a"+ ~ (WHITESPACE | COMMENT)* ~ ("b" ~ (WHITESPACE | COMMENT)*)+ }

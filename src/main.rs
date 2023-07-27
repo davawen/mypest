@@ -66,6 +66,13 @@ mod ast {
         Silent,
     }
 
+    #[derive(Debug, Clone, Copy)]
+    pub enum SequenceKind {
+        Direct, // -
+        Implicit, // ~
+        Spaced, // ^
+    }
+
     #[derive(Debug)]
     pub enum Expr {
         Parenthesized(Box<Expr>),
@@ -73,25 +80,28 @@ mod ast {
         String(String),
         CaseInsensitive(String),
         Rule(Ident),
-        Follow(Box<Expr>, Box<Expr>),
-        Sequence(Box<Expr>, Box<Expr>),
+        Sequence(SequenceKind, Box<Expr>, Box<Expr>),
         Order(Box<Expr>, Box<Expr>),
         PositivePredicate(Box<Expr>),
         NegativePredicate(Box<Expr>),
         Optional(Box<Expr>),
-        Sequenced(Box<Expr>), // Repetition operator that is sequenced
-        ZeroOrMore(Box<Expr>),
-        OneOrMore(Box<Expr>),
-        MinMax(u32, u32, Box<Expr>),
-        Max(u32, Box<Expr>),
-        Min(u32, Box<Expr>),
-        Exact(u32, Box<Expr>)
+        Repetition(Box<Expr>, SequenceKind, Repetition)
+    }
+
+    #[derive(Debug)]
+    pub enum Repetition {
+        ZeroOrMore,
+        OneOrMore,
+        MinMax(u32, u32),
+        Max(u32),
+        Min(u32),
+        Exact(u32)
     }
 
     lazy_static! {
         static ref PRATT: PrattParser<Rule> = PrattParser::new()
             .op(Op::infix(Rule::order, Assoc::Left))
-            .op(Op::infix(Rule::sequence, Assoc::Left) | Op::infix(Rule::follow, Assoc::Left))
+            .op(Op::infix(Rule::sequence, Assoc::Left))
             .op(Op::prefix(Rule::positive_predicate) | Op::prefix(Rule::negative_predicate))
             .op(Op::postfix(Rule::multiplier) | Op::postfix(Rule::optional));
     }
@@ -124,7 +134,7 @@ mod ast {
 
         let name = Ident(pairs.expect().as_str().to_owned());
         let modifier = if let Rule::silent = pairs.peek().unwrap().as_rule() {
-            let m = match pairs.expect().into_inner().expect().as_rule() {
+            let m = match pairs.expect().as_rule() {
                 Rule::silent => Modifier::Silent,
                 _ => unreachable!()
             };
@@ -154,10 +164,11 @@ mod ast {
                 _ => unreachable!()
             })
             .map_infix(|lhs, r, rhs| match r.as_rule() {
-                Rule::follow => Expr::Follow(Box::new(lhs), Box::new(rhs)),
-                Rule::sequence => Expr::Sequence(Box::new(lhs), Box::new(rhs)),
+                Rule::sequence => Expr::Sequence(
+                    parse_sequence_kind(r.into_inner().expect()),
+                    Box::new(lhs), Box::new(rhs)
+                ),
                 Rule::order => Expr::Order(Box::new(lhs), Box::new(rhs)),
-
                 _ => unreachable!("{r:#?}")
             })
             .map_prefix(|r, rhs| match r.as_rule() {
@@ -169,26 +180,33 @@ mod ast {
                 Rule::optional => Expr::Optional(Box::new(lhs)),
                 Rule::multiplier => {
                     let mut pairs = r.into_inner();
-                    let followed = if let Rule::followed = pairs.peek().unwrap().as_rule() {
-                        pairs.expect(); true
-                    } else { false };
+                    let kind = parse_sequence_kind(pairs.expect());
 
                     let r = pairs.expect();
                     let m = match r.as_rule() {
-                        Rule::zero_or_more => Expr::ZeroOrMore(Box::new(lhs)),
-                        Rule::one_or_more => Expr::OneOrMore(Box::new(lhs)),
-                        Rule::numbered => parse_numbered(Box::new(lhs), r.into_inner().expect()),
+                        Rule::zero_or_more => Repetition::ZeroOrMore,
+                        Rule::one_or_more => Repetition::OneOrMore,
+                        Rule::numbered => parse_numbered(r.into_inner().expect()),
                         _ => unreachable!()
                     };
 
-                    if !followed { Expr::Sequenced(Box::new(m)) } else { m }
+                    Expr::Repetition(Box::new(lhs), kind, m)
                 }
                 _ => unreachable!()
             })
             .parse(record.into_inner())
     }
 
-    fn parse_numbered(lhs: Box<Expr>, record: Pair<Rule>) -> Expr {
+    fn parse_sequence_kind(record: Pair<Rule>) -> SequenceKind {
+        match record.as_rule() {
+            Rule::direct => SequenceKind::Direct,
+            Rule::implicit => SequenceKind::Implicit,
+            Rule::spaced => SequenceKind::Spaced,
+            _ => unreachable!()
+        }
+    }
+
+    fn parse_numbered(record: Pair<Rule>) -> Repetition {
         let r = record.as_rule();
         let mut pairs = record.into_inner();
         let mut num = || -> u32 {
@@ -196,10 +214,10 @@ mod ast {
         };
 
         match r {
-            Rule::between_n_and_m => Expr::MinMax(num(), num(), lhs),
-            Rule::at_most_n => Expr::Max(num(), lhs),
-            Rule::at_least_n => Expr::Min(num(), lhs),
-            Rule::exactly_n => Expr::Exact(num(), lhs),
+            Rule::between_n_and_m => Repetition::MinMax(num(), num()),
+            Rule::at_most_n => Repetition::Max(num()),
+            Rule::at_least_n => Repetition::Min(num()),
+            Rule::exactly_n => Repetition::Exact(num()),
             _ => unreachable!()
         }
     }
@@ -261,35 +279,44 @@ mod process {
         }
     }
 
-    macro_rules! match_format {
-        ($e:expr, $f:expr, { $($p:pat => $format:literal),+ }) => {
-            match $e {
-                $($p => write!($f, $format)),+
-            }
-        };
-    }
     impl Display for ast::Expr {
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-            match_format!( self, f, {
-                Self::Parenthesized(e) => "({e})",
-                Self::CharRange(a, b) => "'{a}'..'{b}'",
-                Self::String(s) => "\"{s}\"",
-                Self::CaseInsensitive(s) => "^\"{s}\"",
-                Self::Rule(Ident(i)) => "{i}",
-                Self::Follow(a, b) => "{a} ~ {b}",
-                Self::Sequence(a, b) => "{a} ~ (WHITESPACE | COMMENT)* ~ {b}",
-                Self::Order(a, b) => "{a} | {b}",
-                Self::PositivePredicate(p) => "&{p}",
-                Self::NegativePredicate(p) => "!{p}",
-                Self::Optional(e) => "{e}?",
-                Self::ZeroOrMore(e) => "{e}*",
-                Self::OneOrMore(e) => "{e}+",
-                Self::MinMax(min, max, e) => "{e}{{{min}, {max}}}",
-                Self::Max(max, e) => "{e}{{, {max}}}",
-                Self::Min(min, e) => "{e}{{{min},}}",
-                Self::Exact(n, e) => "{e}{{{n}}}",
-                Self::Sequenced(e) => "({e} ~ (WHITESPACE | COMMENT)*)"
-            })
+            use ast::SequenceKind as Kind;
+            match self {
+                Self::Parenthesized(e)               => write!(f, "({e})"),
+                Self::CharRange(a, b)                => write!(f, "'{a}'..'{b}'"),
+                Self::String(s)                      => write!(f, "\"{s}\""),
+                Self::CaseInsensitive(s)             => write!(f, "^\"{s}\""),
+                Self::Rule(Ident(i))                 => write!(f, "{i}"),
+                Self::Sequence(Kind::Direct, a, b)   => write!(f, "{a} ~ {b}"),
+                Self::Sequence(Kind::Implicit, a, b) => write!(f, "{a} ~ (WHITESPACE | COMMENT)* ~ {b}"),
+                Self::Sequence(Kind::Spaced, a, b)   => write!(f, "{a} ~ (WHITESPACE | COMMENT)+ ~ {b}"),
+                Self::Order(a, b)                    => write!(f, "{a} | {b}"),
+                Self::PositivePredicate(p)           => write!(f, "&{p}"),
+                Self::NegativePredicate(p)           => write!(f, "!{p}"),
+                Self::Optional(e)                    => write!(f, "{e}?"),
+                Self::Repetition(e, kind, r)         => {
+                    match kind {
+                        Kind::Direct => write!(f, "{e}")?,
+                        Kind::Implicit => write!(f, "({e} ~ (WHITESPACE | COMMENT)*)")?,
+                        Kind::Spaced => write!(f, "({e} ~ (WHITESPACE | COMMENT)+)")?,
+                    };
+                    write!(f, "{r}")
+                }
+            }
+        }
+    }
+
+    impl Display for ast::Repetition {
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+            match self {
+                Self::ZeroOrMore       => write!(f, "*"),
+                Self::OneOrMore        => write!(f, "+"),
+                Self::MinMax(min, max) => write!(f, "{{{min}, {max}}}"),
+                Self::Max(max)         => write!(f, "{{, {max}}}"),
+                Self::Min(min)         => write!(f, "{{{min},}}"),
+                Self::Exact(n)         => write!(f, "{{{n}}}"),
+            }
         }
     }
 }

@@ -8,7 +8,7 @@ block_comment = _{ "/*" ~ (block_comment | !"*/" ~ ANY)* ~ "*/" }
 COMMENT = _{ block_comment | line_comment }
 
 doc_comment = ${ "//!" ~ space* ~ inner_doc ~ NEWLINE }
-line_doc = { "///" ~ inner_doc }
+line_doc = { "///" ~ inner_doc ~ NEWLINE }
 inner_doc = @{ (!NEWLINE ~ ANY)* }
 
 grammar = { SOI ~ doc_comment* ~ rule* ~ EOI }
@@ -18,16 +18,14 @@ rule = { line_doc* ~ ident ~ "=" ~ silent? ~ "{" ~ expr ~ "}" }
 silent = { "_" }
 
 expr = { prefix? ~ atom ~ postfix? ~ (infix ~ prefix? ~ atom ~ postfix?)* }
-	infix = _{ follow | sequence | order }
-		follow = { "-" }
-		sequence = { "~" }
+	infix = _{ sequence | order }
+		sequence = { sequence_kind }
 		order = { "|" }
 	prefix = _{ positive_predicate | negative_predicate }
 		positive_predicate = { "&" }
 		negative_predicate = { "!" }
 	postfix = _{ optional | multiplier }
-		multiplier = { followed? ~ (zero_or_more | one_or_more | numbered) }
-		followed = { "-" }
+		multiplier = { sequence_kind ~ (zero_or_more | one_or_more | numbered) }
 		zero_or_more = { "*" }
 		one_or_more = { "+" }
 		optional = { "?" }
@@ -36,6 +34,11 @@ expr = { prefix? ~ atom ~ postfix? ~ (infix ~ prefix? ~ atom ~ postfix?)* }
 			at_most_n = { "," ~ number }
 			at_least_n = { number ~ "," }
 			exactly_n = { number }
+
+sequence_kind = _{ direct | implicit | spaced }
+	direct = { "-" }
+	implicit = { "~" }
+	spaced = { "=" }
 
 atom = _{ char_range | insensitive_string | string | ident | parenthesized }
 
