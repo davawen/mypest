@@ -63,10 +63,7 @@ mod ast {
 
     #[derive(Debug, Clone, Copy)]
     pub enum Modifier {
-        Atomic,
         Silent,
-        Compound,
-        NonAtomic
     }
 
     #[derive(Debug)]
@@ -76,13 +73,15 @@ mod ast {
         String(String),
         CaseInsensitive(String),
         Rule(Ident),
-        Order(Box<Expr>, Box<Expr>),
+        Follow(Box<Expr>, Box<Expr>),
         Sequence(Box<Expr>, Box<Expr>),
+        Order(Box<Expr>, Box<Expr>),
         PositivePredicate(Box<Expr>),
         NegativePredicate(Box<Expr>),
+        Optional(Box<Expr>),
+        Sequenced(Box<Expr>), // Repetition operator that is sequenced
         ZeroOrMore(Box<Expr>),
         OneOrMore(Box<Expr>),
-        Optional(Box<Expr>),
         MinMax(u32, u32, Box<Expr>),
         Max(u32, Box<Expr>),
         Min(u32, Box<Expr>),
@@ -92,9 +91,9 @@ mod ast {
     lazy_static! {
         static ref PRATT: PrattParser<Rule> = PrattParser::new()
             .op(Op::infix(Rule::order, Assoc::Left))
-            .op(Op::infix(Rule::sequence, Assoc::Left))
+            .op(Op::infix(Rule::sequence, Assoc::Left) | Op::infix(Rule::follow, Assoc::Left))
             .op(Op::prefix(Rule::positive_predicate) | Op::prefix(Rule::negative_predicate))
-            .op(Op::postfix(Rule::zero_or_more) | Op::postfix(Rule::one_or_more) | Op::postfix(Rule::optional) | Op::postfix(Rule::numbered));
+            .op(Op::postfix(Rule::multiplier) | Op::postfix(Rule::optional));
     }
 
     pub fn parse(record: Pair<Rule>) -> Grammar {
@@ -124,12 +123,9 @@ mod ast {
         let docs = pairs.take_while_ref(|r| matches!(r.as_rule(), Rule::line_doc)).map(parse_doc).collect();
 
         let name = Ident(pairs.expect().as_str().to_owned());
-        let modifier = if let Rule::modifier = pairs.peek().unwrap().as_rule() {
+        let modifier = if let Rule::silent = pairs.peek().unwrap().as_rule() {
             let m = match pairs.expect().into_inner().expect().as_rule() {
-                Rule::atomic => Modifier::Atomic,
                 Rule::silent => Modifier::Silent,
-                Rule::compound => Modifier::Compound,
-                Rule::non_atomic => Modifier::NonAtomic,
                 _ => unreachable!()
             };
             Some(m)
@@ -158,8 +154,10 @@ mod ast {
                 _ => unreachable!()
             })
             .map_infix(|lhs, r, rhs| match r.as_rule() {
-                Rule::order => Expr::Order(Box::new(lhs), Box::new(rhs)),
+                Rule::follow => Expr::Follow(Box::new(lhs), Box::new(rhs)),
                 Rule::sequence => Expr::Sequence(Box::new(lhs), Box::new(rhs)),
+                Rule::order => Expr::Order(Box::new(lhs), Box::new(rhs)),
+
                 _ => unreachable!("{r:#?}")
             })
             .map_prefix(|r, rhs| match r.as_rule() {
@@ -168,10 +166,23 @@ mod ast {
                 _ => unreachable!()
             })
             .map_postfix(|lhs, r| match r.as_rule() {
-                Rule::zero_or_more => Expr::ZeroOrMore(Box::new(lhs)),
-                Rule::one_or_more => Expr::OneOrMore(Box::new(lhs)),
                 Rule::optional => Expr::Optional(Box::new(lhs)),
-                Rule::numbered => parse_numbered(Box::new(lhs), r.into_inner().expect()),
+                Rule::multiplier => {
+                    let mut pairs = r.into_inner();
+                    let followed = if let Rule::followed = pairs.peek().unwrap().as_rule() {
+                        pairs.expect(); true
+                    } else { false };
+
+                    let r = pairs.expect();
+                    let m = match r.as_rule() {
+                        Rule::zero_or_more => Expr::ZeroOrMore(Box::new(lhs)),
+                        Rule::one_or_more => Expr::OneOrMore(Box::new(lhs)),
+                        Rule::numbered => parse_numbered(Box::new(lhs), r.into_inner().expect()),
+                        _ => unreachable!()
+                    };
+
+                    if !followed { Expr::Sequenced(Box::new(m)) } else { m }
+                }
                 _ => unreachable!()
             })
             .parse(record.into_inner())
@@ -203,6 +214,10 @@ mod ast {
 mod process {
     use std::fmt::{Write, Display, self, Formatter};
 
+    trait MyDisplay {
+        fn as_str(&self) -> String;
+    }
+
     use crate::ast::{self, Ident};
     impl Display for ast::Grammar {
         fn fmt(&self, out: &mut Formatter<'_>) -> fmt::Result {
@@ -224,8 +239,8 @@ mod process {
             for doc in &self.docs {
                 writeln!(out, "/// {doc}")?;
             }
-            let modifier = if let Some(modifier) = self.modifier { format!("{modifier}") } else { String::new() };
-            write!(out, "{} = {}{{ {} }}", self.name, modifier, self.expr)?;
+
+            write!(out, "{} = {}{{ {} }}", self.name, self.modifier.as_str(), self.expr)?;
 
             Ok(())
         }
@@ -237,12 +252,12 @@ mod process {
         }
     }
 
-    impl Display for ast::Modifier {
-        fn fmt(&self, out: &mut Formatter<'_>) -> fmt::Result {
-            let chr = match self {
-                Self::Atomic => '@', Self::NonAtomic => '!', Self::Compound => '$', Self::Silent => '_' 
-            };
-            write!(out, "{chr}")
+    impl MyDisplay for Option<ast::Modifier> {
+        fn as_str(&self) -> String {
+            match self {
+                Some(ast::Modifier::Silent) => '@' ,
+                None => '$'
+            }.to_string()
         }
     }
 
@@ -261,17 +276,19 @@ mod process {
                 Self::String(s) => "\"{s}\"",
                 Self::CaseInsensitive(s) => "^\"{s}\"",
                 Self::Rule(Ident(i)) => "{i}",
+                Self::Follow(a, b) => "{a} ~ {b}",
+                Self::Sequence(a, b) => "{a} ~ (WHITESPACE | COMMENT)* ~ {b}",
                 Self::Order(a, b) => "{a} | {b}",
-                Self::Sequence(a, b) => "{a} ~ {b}",
                 Self::PositivePredicate(p) => "&{p}",
                 Self::NegativePredicate(p) => "!{p}",
+                Self::Optional(e) => "{e}?",
                 Self::ZeroOrMore(e) => "{e}*",
                 Self::OneOrMore(e) => "{e}+",
-                Self::Optional(e) => "{e}?",
                 Self::MinMax(min, max, e) => "{e}{{{min}, {max}}}",
                 Self::Max(max, e) => "{e}{{, {max}}}",
                 Self::Min(min, e) => "{e}{{{min},}}",
-                Self::Exact(n, e) => "{e}{{{n}}}"
+                Self::Exact(n, e) => "{e}{{{n}}}",
+                Self::Sequenced(e) => "({e} ~ (WHITESPACE | COMMENT)*)"
             })
         }
     }
@@ -301,7 +318,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let src = fs::read_to_string(args.input_file)?;
 
-    let mut tree = Pest3::parse(Rule::grammar, &src)?;
+    let tree = Pest3::parse(Rule::grammar, &src);
+    let mut tree = match tree { 
+        Ok(t) => t, Err(e) => { println!("{e}"); Err(e)? }
+    };
 
     if args.show_grammar {
         for r in tree.clone() {

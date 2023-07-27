@@ -13,22 +13,21 @@ inner_doc = @{ (!NEWLINE ~ ANY)* }
 
 grammar = { SOI ~ doc_comment* ~ rule* ~ EOI }
 
-rule = { line_doc* ~ ident ~ "=" ~ modifier? ~ "{" ~ expr ~ "}" }
+rule = { line_doc* ~ ident ~ "=" ~ silent? ~ "{" ~ expr ~ "}" }
 
-modifier = { atomic | silent | compound | non_atomic }
-	atomic = { "@" }
-	silent = { "_" }
-	compound = { "$" }
-	non_atomic = { "!" }
+silent = { "_" }
 
 expr = { prefix? ~ atom ~ postfix? ~ (infix ~ prefix? ~ atom ~ postfix?)* }
-	infix = _{ sequence | order }
+	infix = _{ follow | sequence | order }
+		follow = { "-" }
 		sequence = { "~" }
 		order = { "|" }
 	prefix = _{ positive_predicate | negative_predicate }
 		positive_predicate = { "&" }
 		negative_predicate = { "!" }
-	postfix = _{ zero_or_more | one_or_more | optional | numbered }
+	postfix = _{ optional | multiplier }
+		multiplier = { followed? ~ (zero_or_more | one_or_more | numbered) }
+		followed = { "-" }
 		zero_or_more = { "*" }
 		one_or_more = { "+" }
 		optional = { "?" }
