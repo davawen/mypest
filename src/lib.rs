@@ -22,7 +22,8 @@ pub enum PreprocessError {
     MissingRule {
         has_whitespace: bool,
         has_comment: bool
-    }
+    },
+    BlankRedefinition
 }
 
 impl From<PestError<Rule>> for PreprocessError {
@@ -44,6 +45,7 @@ impl std::fmt::Display for PreprocessError {
                 if !has_comment { write!(f, "`COMMENT`")? }
                 writeln!(f)
             }
+            Self::BlankRedefinition => writeln!(f, "redefining built-in `BLANK` rule.")
         }
     }
 }
@@ -64,6 +66,20 @@ pub fn preprocess(src: &str) -> Result<String, PreprocessError> {
     if !has_whitespace || !has_comment {
         return Err(PreprocessError::MissingRule { has_whitespace, has_comment })
     }
+
+    if grammar.rules.iter().any(|r| r.name.0 == "BLANK") {
+        return Err(PreprocessError::BlankRedefinition)
+    }
+
+    grammar.rules.push(ast::AstRule {
+        name: ast::Ident("BLANK".to_owned()),
+        docs: vec![],
+        modifier: Some(ast::Modifier::Silent),
+        expr: ast::Expr::Order(
+            Box::new(ast::Expr::Rule(ast::Ident("WHITESPACE".to_owned()))),
+            Box::new(ast::Expr::Rule(ast::Ident("COMMENT".to_owned())))
+        )
+    });
     
     for rule in &mut grammar.rules {
         process::expand_calls(rule, &grammar.funcs);

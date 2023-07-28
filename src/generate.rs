@@ -37,7 +37,7 @@ impl Display for ast::Ident {
 impl CustomFormat<()> for Option<ast::Modifier> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>, _: &()) -> fmt::Result {
         let c = match self {
-            Some(ast::Modifier::Silent) => '@' ,
+            Some(ast::Modifier::Silent) => '_' ,
             None => '$'
         };
         write!(f, "{c}")
@@ -54,8 +54,8 @@ impl Display for ast::Expr {
             Self::CaseInsensitive(s)             => write!(f, "^\"{s}\""),
             Self::Rule(Ident(i))                 => write!(f, "{i}"),
             Self::Sequence(Kind::Direct, a, b)   => write!(f, "{a} ~ {b}"),
-            Self::Sequence(Kind::Implicit, a, b) => write!(f, "{a} ~ (WHITESPACE | COMMENT)* ~ {b}"),
-            Self::Sequence(Kind::Spaced, a, b)   => write!(f, "{a} ~ (WHITESPACE | COMMENT)+ ~ {b}"),
+            Self::Sequence(Kind::Implicit, a, b) => write!(f, "{a} ~ BLANK* ~ {b}"),
+            Self::Sequence(Kind::Spaced, a, b)   => write!(f, "{a} ~ BLANK+ ~ {b}"),
             Self::Order(a, b)                    => write!(f, "{a} | {b}"),
             Self::PositivePredicate(p)           => write!(f, "&{p}"),
             Self::NegativePredicate(p)           => write!(f, "!{p}"),
@@ -63,8 +63,8 @@ impl Display for ast::Expr {
             Self::Repetition(e, kind, r)         => {
                 match kind {
                     Kind::Direct => write!(f, "{e}")?,
-                    Kind::Implicit => write!(f, "({e} ~ (WHITESPACE | COMMENT)*)")?,
-                    Kind::Spaced => write!(f, "({e} ~ (WHITESPACE | COMMENT)+)")?,
+                    Kind::Implicit => write!(f, "({e} ~ BLANK*)")?,
+                    Kind::Spaced => write!(f, "({e} ~ BLANK+)")?,
                 };
                 write!(f, "{r}")
             }
