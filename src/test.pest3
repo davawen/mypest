@@ -1,4 +1,14 @@
 
+end = { "end" }
+hi = { "hi" }
+
+encased[kw, r] = { kw = r = kw }
+double[kw, r] = { encased[kw, encased[kw, r]] }
+
+test = { double[end, hi] }
+
 separated[e, s] = { e ~ (s ~ e)* }
+
+separated = { "something else" }
 
 list = { "[" ~ separated["a" | "b", ","]? ~ "]" }

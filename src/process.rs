@@ -2,46 +2,45 @@ use std::collections::HashMap;
 
 use crate::ast::{self, Expr};
 
-pub fn expand_calls(expr: &mut Expr, funcs: &HashMap<String, ast::Func>) {
-    match expr {
-        Expr::FuncCall(f, args) => {
-            *expr = expand_func(args, &funcs[&f.0], funcs);
-        }
-        Expr::Parenthesized(e)
-        | Expr::PositivePredicate(e)
-        | Expr::NegativePredicate(e)
-        | Expr::Optional(e)
-        | Expr::Repetition(e, _, _) => expand_calls(e, funcs),
-        Expr::Sequence(_, a, b) | Expr::Order(a, b) => {
-            expand_calls(a, funcs);
-            expand_calls(b, funcs);
-        }
-        Expr::CharRange(_, _) | Expr::String(_) | Expr::CaseInsensitive(_) | Expr::Rule(_) => (),
-    }
+pub fn expand_calls(rule: &mut ast::AstRule, funcs: &HashMap<String, ast::Func>) {
+    expand_call_expr(&mut rule.expr, None, funcs);
 }
 
-fn expand_func(args: &Vec<Expr>, func: &ast::Func, funcs: &HashMap<String, ast::Func>) -> Expr {
-    let mut expr = func.expr.clone();
-    expand_func_expr(&mut expr, args, func, funcs);
+#[derive(Clone, Copy)]
+struct Call<'a> {
+    args: &'a Vec<Expr>,
+    func: &'a ast::Func
+}
+
+fn expand_func(call: Call, funcs: &HashMap<String, ast::Func>) -> Expr {
+    let mut expr = call.func.expr.clone();
+    expand_call_expr(&mut expr, Some(call), funcs);
     Expr::Parenthesized(Box::new(expr))
 }
 
-fn expand_func_expr(expr: &mut Expr, args: &Vec<Expr>, func: &ast::Func, funcs: &HashMap<String, ast::Func>) {
+fn expand_call_expr(expr: &mut Expr, call: Option<Call>, funcs: &HashMap<String, ast::Func>) {
     match expr {
-        Expr::Rule(i) => if let Some(idx) = func.params.iter().position(|p| p.0 == i.0) {
-            *expr = args[idx].clone();
+        Expr::Rule(i) => if let Some(call) = call {
+            if let Some(idx) = call.func.params.iter().position(|p| p.0 == i.0) {
+                *expr = call.args[idx].clone();
+            }
         }
         Expr::FuncCall(f, args) => {
-            *expr = expand_func(args, &funcs[&f.0], funcs);
+            // expand arguments in case you have function calls as arguments
+            for arg in args.iter_mut() {
+                expand_call_expr(arg, call, funcs);
+            }
+
+            *expr = expand_func(Call { args, func: &funcs[&f.0] }, funcs);
         }
         Expr::Parenthesized(e)
         | Expr::PositivePredicate(e)
         | Expr::NegativePredicate(e)
         | Expr::Optional(e)
-        | Expr::Repetition(e, _, _) => expand_func_expr(e, args, func, funcs),
+        | Expr::Repetition(e, _, _) => expand_call_expr(e, call, funcs),
         Expr::Sequence(_, a, b) | Expr::Order(a, b) => {
-            expand_func_expr(a, args, func, funcs);
-            expand_func_expr(b, args, func, funcs);
+            expand_call_expr(a, call, funcs);
+            expand_call_expr(b, call, funcs);
         }
         Expr::CharRange(_, _) | Expr::String(_) | Expr::CaseInsensitive(_) => (),
     }

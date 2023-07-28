@@ -1,4 +1,4 @@
-use std::{hash::Hash, fmt::Debug, fs, error::Error, rc::Rc};
+use std::{hash::Hash, fmt::Debug, fs, error::Error};
 
 use pest::{iterators::Pair, Parser};
 use pest_derive::Parser;
@@ -76,7 +76,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     for rule in &mut grammar.rules {
-        process::expand_calls(&mut rule.expr, &grammar.funcs);
+        process::expand_calls(rule, &grammar.funcs);
     }
 
     let generated = format!("{grammar}");
