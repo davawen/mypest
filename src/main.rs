@@ -13,8 +13,8 @@ trait ExpectIterator<T>: Iterator<Item = T> {
 extern crate alloc;
 
 #[derive(Parser)]
-#[grammar = "pest3.pest"]
-struct Pest3;
+#[grammar = "my_pest.pest"]
+struct MyPest;
 
 fn print_record(record: Pair<Rule>, depth: usize) {
     let indent = " ".repeat(depth * 2);
@@ -59,7 +59,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let src = fs::read_to_string(args.input_file)?;
 
-    let tree = Pest3::parse(Rule::grammar, &src);
+    let tree = MyPest::parse(Rule::grammar, &src);
     let mut tree = match tree { 
         Ok(t) => t, Err(e) => { println!("{e}"); Err(e)? }
     };
