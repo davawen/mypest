@@ -1,6 +1,4 @@
-rule = { "a" - "b" ~ "c"}
 
-foo = _{ "a"-+ ~ "b"~+ }
+separated[e, s] = { e ~ (s ~ e)* }
 
-//=>
-//foo = ${ "a"+ ~ (WHITESPACE | COMMENT)* ~ ("b" ~ (WHITESPACE | COMMENT)*)+ }
+list = { "[" ~ separated["a" | "b", ","]? ~ "]" }

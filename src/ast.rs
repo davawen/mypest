@@ -1,8 +1,11 @@
-use std::{str::Chars, fmt::Debug, hash::Hash};
+use std::{collections::HashMap, fmt::Debug, hash::Hash, str::Chars};
 
 use itertools::Itertools;
 use lazy_static::lazy_static;
-use pest::{iterators::{Pair, Pairs}, pratt_parser::{PrattParser, Op, Assoc}};
+use pest::{
+    iterators::{Pair, Pairs},
+    pratt_parser::{Assoc, Op, PrattParser},
+};
 
 use crate::ExpectIterator;
 
@@ -14,7 +17,15 @@ impl ExpectIterator<char> for Chars<'_> {}
 #[derive(Debug)]
 pub struct Grammar {
     pub docs: Vec<String>,
-    pub rules: Vec<AstRule>
+    pub rules: Vec<AstRule>,
+    pub funcs: HashMap<String, Func>,
+}
+
+#[derive(Debug)]
+pub struct Func {
+    pub docs: Vec<String>,
+    pub params: Vec<Ident>,
+    pub expr: Expr,
 }
 
 #[derive(Debug)]
@@ -22,10 +33,10 @@ pub struct AstRule {
     pub docs: Vec<String>,
     pub name: Ident,
     pub modifier: Option<Modifier>,
-    pub expr: Expr
+    pub expr: Expr,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Ident(pub String);
 
 #[derive(Debug, Clone, Copy)]
@@ -35,34 +46,35 @@ pub enum Modifier {
 
 #[derive(Debug, Clone, Copy)]
 pub enum SequenceKind {
-    Direct, // -
+    Direct,   // -
     Implicit, // ~
-    Spaced, // ^
+    Spaced,   // =
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expr {
-    Parenthesized(Box<Expr>),
     CharRange(char, char),
     String(String),
     CaseInsensitive(String),
     Rule(Ident),
+    FuncCall(Ident, Vec<Expr>),
+    Parenthesized(Box<Expr>),
     Sequence(SequenceKind, Box<Expr>, Box<Expr>),
     Order(Box<Expr>, Box<Expr>),
     PositivePredicate(Box<Expr>),
     NegativePredicate(Box<Expr>),
     Optional(Box<Expr>),
-    Repetition(Box<Expr>, SequenceKind, Repetition)
+    Repetition(Box<Expr>, SequenceKind, Repetition),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum Repetition {
     ZeroOrMore,
     OneOrMore,
     MinMax(u32, u32),
     Max(u32),
     Min(u32),
-    Exact(u32)
+    Exact(u32),
 }
 
 lazy_static! {
@@ -76,11 +88,17 @@ lazy_static! {
 pub fn parse(record: Pair<Rule>) -> Grammar {
     assert_eq!(record.as_rule(), Rule::grammar);
 
-    let mut pairs = record.into_inner().filter(|r| !matches!(r.as_rule(), Rule::EOI));
+    let mut pairs = record
+        .into_inner()
+        .filter(|r| !matches!(r.as_rule(), Rule::EOI));
 
     Grammar {
-        docs: pairs.take_while_ref(|r| matches!(r.as_rule(), Rule::doc_comment)).map(parse_doc).collect(),
-        rules: pairs.map(parse_rule).collect()
+        docs: pairs
+            .take_while_ref(|r| matches!(r.as_rule(), Rule::doc_comment))
+            .map(parse_doc)
+            .collect(),
+        rules: pairs.clone().filter(|x| matches!(x.as_rule(), Rule::rule)).map(parse_rule).collect(),
+        funcs: pairs.filter(|x| matches!(x.as_rule(), Rule::parametrized)).map(parse_func).collect(),
     }
 }
 
@@ -89,103 +107,144 @@ fn parse_doc(record: Pair<Rule>) -> String {
         Rule::doc_comment => parse_doc(record.into_inner().expect()),
         Rule::line_doc => parse_doc(record.into_inner().expect()),
         Rule::inner_doc => record.as_str().to_owned(),
-        _ => unreachable!()
+        _ => unreachable!(),
     }
+}
+
+fn parse_func(record: Pair<Rule>) -> (String, Func) {
+    assert_eq!(record.as_rule(), Rule::parametrized);
+    let mut pairs = record.into_inner();
+
+    let docs = pairs
+        .take_while_ref(|r| matches!(r.as_rule(), Rule::line_doc))
+        .map(parse_doc)
+        .collect();
+
+    let name = Ident(pairs.expect().as_str().to_owned());
+    let args = pairs
+        .expect()
+        .into_inner()
+        .map(|x| x.as_str().to_owned())
+        .map(Ident)
+        .collect();
+    let expr = parse_expr(pairs.expect());
+    ( name.0.clone(), Func {
+        docs,
+        params: args,
+        expr,
+    })
 }
 
 fn parse_rule(record: Pair<Rule>) -> AstRule {
     assert_eq!(record.as_rule(), Rule::rule);
     let mut pairs = record.into_inner();
 
-    let docs = pairs.take_while_ref(|r| matches!(r.as_rule(), Rule::line_doc)).map(parse_doc).collect();
+    let docs = pairs
+        .take_while_ref(|r| matches!(r.as_rule(), Rule::line_doc))
+        .map(parse_doc)
+        .collect();
 
     let name = Ident(pairs.expect().as_str().to_owned());
     let modifier = if let Rule::silent = pairs.peek().unwrap().as_rule() {
         let m = match pairs.expect().as_rule() {
             Rule::silent => Modifier::Silent,
-            _ => unreachable!()
+            _ => unreachable!(),
         };
         Some(m)
-    } else { None };
+    } else {
+        None
+    };
     let expr = parse_expr(pairs.expect());
     AstRule {
-        docs, name, modifier, expr
+        docs,
+        name,
+        modifier,
+        expr,
     }
 }
 
 fn parse_expr(record: Pair<Rule>) -> Expr {
     PRATT
         .map_primary(|r| match r.as_rule() {
+            Rule::call => {
+                let mut pairs = r.into_inner();
+                Expr::FuncCall(
+                    Ident(pairs.expect().as_str().to_owned()),
+                    pairs.map(parse_expr).map(|x| Expr::Parenthesized(Box::new(x))).collect()
+                )
+            }
             Rule::char_range => {
                 let mut chars = r.into_inner();
                 let mut get_char = || chars.expect().as_str().chars().take(2).last().unwrap();
-                Expr::CharRange(
-                    get_char(), get_char()
-                )
+                Expr::CharRange(get_char(), get_char())
             }
-            Rule::insensitive_string => Expr::CaseInsensitive(parse_string(r.into_inner().expect())),
+            Rule::insensitive_string => {
+                Expr::CaseInsensitive(parse_string(r.into_inner().expect()))
+            }
             Rule::string => Expr::String(parse_string(r)),
             Rule::ident => Expr::Rule(Ident(r.as_str().to_owned())),
-            Rule::parenthesized => Expr::Parenthesized(Box::new(parse_expr(r.into_inner().expect()))),
+            Rule::parenthesized => {
+                Expr::Parenthesized(Box::new(parse_expr(r.into_inner().expect())))
+            }
             Rule::expr => parse_expr(r),
-            _ => unreachable!()
+            _ => unreachable!(),
         })
         .map_infix(|lhs, r, rhs| match r.as_rule() {
-            Rule::sequence => Expr::Sequence(
-                parse_sequence_kind(r.into_inner().expect()),
-                Box::new(lhs), Box::new(rhs)
-            ),
+            Rule::sequence => Expr::Sequence(parse_sequence_kind(r), Box::new(lhs), Box::new(rhs)),
             Rule::order => Expr::Order(Box::new(lhs), Box::new(rhs)),
-            _ => unreachable!("{r:#?}")
+            _ => unreachable!("{r:#?}"),
         })
         .map_prefix(|r, rhs| match r.as_rule() {
             Rule::positive_predicate => Expr::PositivePredicate(Box::new(rhs)),
             Rule::negative_predicate => Expr::NegativePredicate(Box::new(rhs)),
-            _ => unreachable!()
+            _ => unreachable!(),
         })
         .map_postfix(|lhs, r| match r.as_rule() {
             Rule::optional => Expr::Optional(Box::new(lhs)),
             Rule::multiplier => {
                 let mut pairs = r.into_inner();
-                let kind = parse_sequence_kind(pairs.expect());
+                let kind = if let Rule::sequence = pairs.peek().unwrap().as_rule() {
+                    parse_sequence_kind(pairs.expect())
+                } else {
+                    SequenceKind::Implicit
+                };
 
                 let r = pairs.expect();
                 let m = match r.as_rule() {
                     Rule::zero_or_more => Repetition::ZeroOrMore,
                     Rule::one_or_more => Repetition::OneOrMore,
                     Rule::numbered => parse_numbered(r.into_inner().expect()),
-                    _ => unreachable!()
+                    _ => unreachable!(),
                 };
 
                 Expr::Repetition(Box::new(lhs), kind, m)
             }
-            _ => unreachable!()
+            _ => unreachable!(),
         })
         .parse(record.into_inner())
 }
 
 fn parse_sequence_kind(record: Pair<Rule>) -> SequenceKind {
     match record.as_rule() {
+        Rule::sequence => parse_sequence_kind(record.into_inner().expect()),
         Rule::direct => SequenceKind::Direct,
         Rule::implicit => SequenceKind::Implicit,
         Rule::spaced => SequenceKind::Spaced,
-        _ => unreachable!()
+        _ => unreachable!(),
     }
 }
 
 fn parse_numbered(record: Pair<Rule>) -> Repetition {
     let r = record.as_rule();
     let mut pairs = record.into_inner();
-    let mut num = || -> u32 {
-        pairs.expect().as_str().parse().unwrap()
-    };
+    let mut num = || -> u32 { pairs.expect().as_str().parse().unwrap() };
 
     match r {
         Rule::between_n_and_m => Repetition::MinMax(num(), num()),
         Rule::at_most_n => Repetition::Max(num()),
         Rule::at_least_n => Repetition::Min(num()),
         Rule::exactly_n => Repetition::Exact(num()),
-        _ => unreachable!()
+        _ => unreachable!(),
     }
 }
 

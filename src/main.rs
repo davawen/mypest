@@ -1,6 +1,6 @@
-use std::{hash::Hash, fmt::Debug, str::Chars, fs, env, io, path::Path, error::Error};
+use std::{hash::Hash, fmt::Debug, fs, error::Error, rc::Rc};
 
-use pest::{iterators::{Pair, Pairs}, Parser, Span};
+use pest::{iterators::Pair, Parser};
 use pest_derive::Parser;
 
 trait ExpectIterator<T>: Iterator<Item = T> {
@@ -19,7 +19,7 @@ struct Pest3;
 fn print_record(record: Pair<Rule>, depth: usize) {
     let indent = " ".repeat(depth * 2);
 
-    let (r, span, s) = (record.as_rule(), record.as_span(), record.as_str());
+    let (r, _span, s) = (record.as_rule(), record.as_span(), record.as_str());
 
     let show = matches!(r, Rule::doc_comment | Rule::line_doc | Rule::ident | Rule::char_range | Rule::insensitive_string | Rule::string | Rule::char);
 
@@ -32,6 +32,8 @@ fn print_record(record: Pair<Rule>, depth: usize) {
 
 mod ast;
 mod process;
+mod generate;
+mod custom_format;
 
 /// Preprocess pest3 grammars into pest
 #[derive(clap::Parser)]
@@ -44,7 +46,7 @@ struct Args {
     #[arg(short, long)]
     print_ast: bool,
 
-    /// Input pest3 grammar
+    ///  pest3 grammar
     input_file: String,
 
     /// Output grammar, or if not present output to STDOUT
@@ -68,9 +70,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let grammar = ast::parse(tree.expect());
+    let mut grammar = ast::parse(tree.expect());
     if args.print_ast {
         println!("{grammar:#?}");
+    }
+
+    for rule in &mut grammar.rules {
+        process::expand_calls(&mut rule.expr, &grammar.funcs);
     }
 
     let generated = format!("{grammar}");

@@ -1,89 +1,48 @@
-use std::fmt::{Write, Display, self, Formatter};
+use std::collections::HashMap;
 
-trait MyDisplay {
-    fn as_str(&self) -> String;
-}
+use crate::ast::{self, Expr};
 
-use crate::ast::{self, Ident};
-impl Display for ast::Grammar {
-    fn fmt(&self, out: &mut Formatter<'_>) -> fmt::Result {
-        for doc in &self.docs {
-            writeln!(out, "//! {doc}")?
+pub fn expand_calls(expr: &mut Expr, funcs: &HashMap<String, ast::Func>) {
+    match expr {
+        Expr::FuncCall(f, args) => {
+            *expr = expand_func(args, &funcs[&f.0], funcs);
         }
-        writeln!(out)?;
-
-        for rule in &self.rules {
-            writeln!(out, "{rule}")?;
+        Expr::Parenthesized(e)
+        | Expr::PositivePredicate(e)
+        | Expr::NegativePredicate(e)
+        | Expr::Optional(e)
+        | Expr::Repetition(e, _, _) => expand_calls(e, funcs),
+        Expr::Sequence(_, a, b) | Expr::Order(a, b) => {
+            expand_calls(a, funcs);
+            expand_calls(b, funcs);
         }
-
-        Ok(())
+        Expr::CharRange(_, _) | Expr::String(_) | Expr::CaseInsensitive(_) | Expr::Rule(_) => (),
     }
 }
 
-impl Display for ast::AstRule {
-    fn fmt(&self, out: &mut Formatter<'_>) -> fmt::Result {
-        for doc in &self.docs {
-            writeln!(out, "/// {doc}")?;
+fn expand_func(args: &Vec<Expr>, func: &ast::Func, funcs: &HashMap<String, ast::Func>) -> Expr {
+    let mut expr = func.expr.clone();
+    expand_func_expr(&mut expr, args, func, funcs);
+    Expr::Parenthesized(Box::new(expr))
+}
+
+fn expand_func_expr(expr: &mut Expr, args: &Vec<Expr>, func: &ast::Func, funcs: &HashMap<String, ast::Func>) {
+    match expr {
+        Expr::Rule(i) => if let Some(idx) = func.params.iter().position(|p| p.0 == i.0) {
+            *expr = args[idx].clone();
         }
-
-        write!(out, "{} = {}{{ {} }}", self.name, self.modifier.as_str(), self.expr)?;
-
-        Ok(())
-    }
-}
-
-impl Display for ast::Ident {
-    fn fmt(&self, out: &mut Formatter<'_>) -> fmt::Result {
-        write!(out, "{}", self.0)
-    }
-}
-
-impl MyDisplay for Option<ast::Modifier> {
-    fn as_str(&self) -> String {
-        match self {
-            Some(ast::Modifier::Silent) => '@' ,
-            None => '$'
-        }.to_string()
-    }
-}
-
-impl Display for ast::Expr {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        use ast::SequenceKind as Kind;
-        match self {
-            Self::Parenthesized(e)               => write!(f, "({e})"),
-            Self::CharRange(a, b)                => write!(f, "'{a}'..'{b}'"),
-            Self::String(s)                      => write!(f, "\"{s}\""),
-            Self::CaseInsensitive(s)             => write!(f, "^\"{s}\""),
-            Self::Rule(Ident(i))                 => write!(f, "{i}"),
-            Self::Sequence(Kind::Direct, a, b)   => write!(f, "{a} ~ {b}"),
-            Self::Sequence(Kind::Implicit, a, b) => write!(f, "{a} ~ (WHITESPACE | COMMENT)* ~ {b}"),
-            Self::Sequence(Kind::Spaced, a, b)   => write!(f, "{a} ~ (WHITESPACE | COMMENT)+ ~ {b}"),
-            Self::Order(a, b)                    => write!(f, "{a} | {b}"),
-            Self::PositivePredicate(p)           => write!(f, "&{p}"),
-            Self::NegativePredicate(p)           => write!(f, "!{p}"),
-            Self::Optional(e)                    => write!(f, "{e}?"),
-            Self::Repetition(e, kind, r)         => {
-                match kind {
-                    Kind::Direct => write!(f, "{e}")?,
-                    Kind::Implicit => write!(f, "({e} ~ (WHITESPACE | COMMENT)*)")?,
-                    Kind::Spaced => write!(f, "({e} ~ (WHITESPACE | COMMENT)+)")?,
-                };
-                write!(f, "{r}")
-            }
+        Expr::FuncCall(f, args) => {
+            *expr = expand_func(args, &funcs[&f.0], funcs);
         }
-    }
-}
-
-impl Display for ast::Repetition {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ZeroOrMore       => write!(f, "*"),
-            Self::OneOrMore        => write!(f, "+"),
-            Self::MinMax(min, max) => write!(f, "{{{min}, {max}}}"),
-            Self::Max(max)         => write!(f, "{{, {max}}}"),
-            Self::Min(min)         => write!(f, "{{{min},}}"),
-            Self::Exact(n)         => write!(f, "{{{n}}}"),
+        Expr::Parenthesized(e)
+        | Expr::PositivePredicate(e)
+        | Expr::NegativePredicate(e)
+        | Expr::Optional(e)
+        | Expr::Repetition(e, _, _) => expand_func_expr(e, args, func, funcs),
+        Expr::Sequence(_, a, b) | Expr::Order(a, b) => {
+            expand_func_expr(a, args, func, funcs);
+            expand_func_expr(b, args, func, funcs);
         }
+        Expr::CharRange(_, _) | Expr::String(_) | Expr::CaseInsensitive(_) => (),
     }
 }

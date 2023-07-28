@@ -11,7 +11,10 @@ doc_comment = ${ "//!" ~ space* ~ inner_doc ~ NEWLINE }
 line_doc = { "///" ~ inner_doc ~ NEWLINE }
 inner_doc = @{ (!NEWLINE ~ ANY)* }
 
-grammar = { SOI ~ doc_comment* ~ rule* ~ EOI }
+grammar = { SOI ~ doc_comment* ~ (rule | parametrized)* ~ EOI }
+
+parametrized = { line_doc* ~ ident ~ param_list ~ "=" ~ "{" ~ expr ~ "}" }
+	param_list = { "[" ~ (ident ~ ("," ~ ident)*)? ~ "]" }
 
 rule = { line_doc* ~ ident ~ "=" ~ silent? ~ "{" ~ expr ~ "}" }
 
@@ -19,13 +22,12 @@ silent = { "_" }
 
 expr = { prefix? ~ atom ~ postfix? ~ (infix ~ prefix? ~ atom ~ postfix?)* }
 	infix = _{ sequence | order }
-		sequence = { sequence_kind }
 		order = { "|" }
 	prefix = _{ positive_predicate | negative_predicate }
 		positive_predicate = { "&" }
 		negative_predicate = { "!" }
 	postfix = _{ optional | multiplier }
-		multiplier = { sequence_kind ~ (zero_or_more | one_or_more | numbered) }
+		multiplier = { sequence? ~ (zero_or_more | one_or_more | numbered) }
 		zero_or_more = { "*" }
 		one_or_more = { "+" }
 		optional = { "?" }
@@ -35,12 +37,15 @@ expr = { prefix? ~ atom ~ postfix? ~ (infix ~ prefix? ~ atom ~ postfix?)* }
 			at_least_n = { number ~ "," }
 			exactly_n = { number }
 
-sequence_kind = _{ direct | implicit | spaced }
+sequence = { direct | implicit | spaced }
 	direct = { "-" }
 	implicit = { "~" }
 	spaced = { "=" }
 
-atom = _{ char_range | insensitive_string | string | ident | parenthesized }
+atom = _{ call | char_range | insensitive_string | string | ident | parenthesized }
+
+call = { ident ~ argument_list }
+	argument_list = _{ "[" ~ (expr ~ ("," ~ expr)*)? ~ "]" }
 
 parenthesized = { "(" ~ expr ~ ")" }
 
